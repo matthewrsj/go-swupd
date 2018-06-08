@@ -173,6 +173,19 @@ func downloadBundlePack(b *swupd.Manifest, oldMoM *swupd.Manifest) error {
 	return tarExtractURL(url, outPack)
 }
 
+func consolidateAllFiles(fs map[string]*swupd.File, fhashes map[string]*swupd.File, bMan *swupd.Manifest, ver uint32) {
+	for _, f := range bMan.Files {
+		if ver > 0 && f.Version <= uint32(ver) {
+			continue
+		}
+
+		fs[f.Name] = f
+		if fhashes != nil {
+			fhashes[f.Hash.String()] = f
+		}
+	}
+}
+
 func consolidateFiles(fs map[string]*swupd.File, fhashes map[string]*swupd.File, bMan *swupd.Manifest, ver uint32) {
 	for _, f := range bMan.Files {
 		if ver > 0 && f.Version <= uint32(ver) {
@@ -238,7 +251,7 @@ func downloadVerifyBundles(bundles []*swupd.File, serverVersion, currentVersion 
 		if err != nil {
 			return err
 		}
-		consolidateFiles(toFiles, toHashes, bMan, uint32(ver))
+		consolidateAllFiles(toFiles, toHashes, bMan, uint32(ver))
 		if err = downloadBundlePack(bMan, oldMoM); err != nil {
 			fmt.Println("fullfile fallback", bMan.Name)
 			consolidateFiles(files, nil, bMan, uint32(ver))
@@ -330,6 +343,9 @@ func applyDeltas() error {
 
 func verifyUpdateFiles() error {
 	for _, f := range toFiles {
+		if !f.Present() {
+			continue
+		}
 		p := filepath.Join(fmt.Sprint(f.Version), "staged", f.Hash.String())
 		if _, err := os.Lstat(p); err != nil {
 			fmt.Println(f)
@@ -364,6 +380,9 @@ func cpy(src, dst string) error {
 func stageFiles(toKeys []string) error {
 	for _, k := range toKeys {
 		f := toFiles[k]
+		if !f.Present() {
+			continue
+		}
 		src := filepath.Join(fmt.Sprint(f.Version), "staged", f.Hash.String())
 		var dst string
 		if f.Type != swupd.TypeDirectory {
@@ -379,16 +398,25 @@ func stageFiles(toKeys []string) error {
 	return nil
 }
 
-func renameToFinal(toKeys []string) error {
+func renameToFinal(toKeys []string) {
 	for _, k := range toKeys {
 		f := toFiles[k]
+		if !f.Present() {
+			if err := os.RemoveAll(f.Name); err != nil {
+				fmt.Println(err)
+			}
+			continue
+		}
+		if f.Type == swupd.TypeDirectory {
+			// already done
+			continue
+		}
 		src := filepath.Join(filepath.Dir(f.Name), ".update."+filepath.Base(f.Name))
 		dst := f.Name
 		if err := os.Rename(src, dst); err != nil {
 			fmt.Println(err)
 		}
 	}
-	return nil
 }
 
 func Update() error {
