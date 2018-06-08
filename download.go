@@ -15,19 +15,140 @@
 package main
 
 import (
-	"bytes"
 	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
+	"sort"
+	"strconv"
 	"syscall"
 	"unsafe"
+
+	"github.com/clearlinux/mixer-tools/swupd"
 )
+
+func downloadRemainingFiles() error {
+	var err error
+	fmt.Printf("%d files were not in a pack\n", len(files))
+	for _, f := range files {
+		err = os.MkdirAll(fmt.Sprintf("%d/staged", f.Version), 0744)
+		if err != nil {
+			return err
+		}
+		target := fmt.Sprintf("%d/staged/%s", f.Version, f.Name)
+		if _, err = os.Lstat(target); err == nil {
+			continue
+		}
+		target += ".tar"
+		url := fmt.Sprintf("https://download.clearlinux.org/update/%d/files/%s.tar", f.Version, f.Name)
+		err = tarExtractURL(url, target)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func downloadCurrentBundles(MoM *swupd.Manifest, bundles []string) error {
+	for _, m := range MoM.Files {
+		i := sort.SearchStrings(bundles, m.Name)
+		if i >= len(bundles) || bundles[i] != m.Name {
+			continue
+		}
+		bMan, err := downloadManifest(m)
+		if err != nil {
+			return err
+		}
+		consolidateFiles(fromFiles, fromHashes, bMan, 0)
+	}
+	return nil
+}
+
+func downloadVerifyBundles(bundles []*swupd.File, serverVersion, currentVersion string, oldMoM *swupd.Manifest) error {
+	ver, err := strconv.ParseUint(currentVersion, 10, 32)
+	if err != nil {
+		return err
+	}
+	for _, b := range bundles {
+		bMan, err := downloadManifest(b)
+		if err != nil {
+			return err
+		}
+		consolidateAllFiles(toFiles, toHashes, bMan, uint32(ver))
+		if err = downloadBundlePack(bMan, oldMoM); err != nil {
+			fmt.Println("fullfile fallback", bMan.Name)
+			consolidateFiles(files, nil, bMan, uint32(ver))
+		}
+	}
+
+	return nil
+}
+
+func downloadVerifyMoM(serverVersion string) (*swupd.Manifest, error) {
+	addVer(serverVersion)
+	err := os.MkdirAll(serverVersion, 0744)
+	if err != nil {
+		return nil, err
+	}
+	outMoM, err := os.Create(filepath.Join(serverVersion, "Manifest.MoM"))
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.Get("https://download.clearlinux.org/update/" + serverVersion + "/Manifest.MoM")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	_, err = io.Copy(outMoM, resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return swupd.ParseManifestFile(filepath.Join(serverVersion, "Manifest.MoM"))
+}
+
+func downloadManifest(bundle *swupd.File) (*swupd.Manifest, error) {
+	outMan := fmt.Sprintf("%d/Manifest.%s", bundle.Version, bundle.Name)
+	if _, err := os.Lstat(outMan); err == nil {
+		return swupd.ParseManifestFile(outMan)
+	}
+	url := fmt.Sprintf("https://download.clearlinux.org/update/%d/Manifest.%s.tar", bundle.Version, bundle.Name)
+
+	addVer(bundle.Version)
+	err := os.MkdirAll(fmt.Sprint(bundle.Version), 0744)
+	if err != nil {
+		return nil, err
+	}
+	err = tarExtractURL(url, outMan)
+	if err != nil {
+		return nil, err
+	}
+
+	return swupd.ParseManifestFile(outMan)
+}
+
+func downloadBundlePack(b *swupd.Manifest, oldMoM *swupd.Manifest) error {
+	var recentVersion uint32
+	for _, m := range oldMoM.Files {
+		if m.Name == b.Name {
+			recentVersion = m.Version
+			break
+		}
+	}
+	if recentVersion == 0 {
+		return errors.New("couldn't find recent version")
+	}
+	outPack := fmt.Sprintf("%d/pack-%s-from-%d.tar", b.Header.Version, b.Name, recentVersion)
+	if _, err := os.Lstat(outPack); err == nil {
+		return nil
+	}
+	url := fmt.Sprintf("https://download.clearlinux.org/update/%d/pack-%s-from-%d.tar", b.Header.Version, b.Name, recentVersion)
+	return tarExtractURL(url, outPack)
+}
 
 // download does a simple http.Get on the url and performs a check against the
 // error code. The response body is only returned for StatusOK
@@ -169,40 +290,6 @@ func StdoutIsTTY() bool {
 	}
 
 	return tty == 0
-}
-
-// RunCommandSilent runs the given command with args and does not print output
-func RunCommandSilent(cmdname string, args ...string) error {
-	_, err := RunCommandOutput(cmdname, args...)
-	return err
-}
-
-// RunCommandOutput executes the command with arguments and stores its output in
-// memory. If the command succeeds returns that output, if it fails, return err that
-// contains both the out and err streams from the execution.
-func RunCommandOutput(cmdname string, args ...string) (*bytes.Buffer, error) {
-	cmd := exec.Command(cmdname, args...)
-	var outBuf bytes.Buffer
-	var errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-	err := cmd.Run()
-	if err != nil {
-		var buf bytes.Buffer
-		fmt.Fprintf(&buf, "failed to execute %s", strings.Join(cmd.Args, " "))
-		if outBuf.Len() > 0 {
-			fmt.Fprintf(&buf, "\nSTDOUT:\n%s", outBuf.Bytes())
-		}
-		if errBuf.Len() > 0 {
-			fmt.Fprintf(&buf, "\nSTDERR:\n%s", errBuf.Bytes())
-		}
-		if outBuf.Len() > 0 || errBuf.Len() > 0 {
-			// Finish without a newline to wrap well with the err.
-			fmt.Fprintf(&buf, "failed to execute")
-		}
-		return &outBuf, errors.New(err.Error() + buf.String())
-	}
-	return &outBuf, nil
 }
 
 func tarExtractURL(url, target string) error {
