@@ -15,12 +15,17 @@ import (
 	"github.com/clearlinux/mixer-tools/swupd"
 )
 
-var fromFiles = make(map[string]*swupd.File)
-var fromHashes = make(map[string]*swupd.File)
-var files = make(map[string]*swupd.File)
-var toFiles = make(map[string]*swupd.File)
-var toHashes = make(map[string]*swupd.File)
+var (
+	fromFiles  = make(map[string]*swupd.File)
+	fromHashes = make(map[string]*swupd.File)
+	files      = make(map[string]*swupd.File)
+	toFiles    = make(map[string]*swupd.File)
+	toHashes   = make(map[string]*swupd.File)
+)
+
 var vers = make(map[uint32]bool)
+
+var stateDir = "/var/lib/go-swupd"
 
 func addVer(ver interface{}) {
 	switch v := ver.(type) {
@@ -153,7 +158,7 @@ func verifyUpdateFiles() error {
 		if !f.Present() {
 			continue
 		}
-		p := filepath.Join(fmt.Sprint(f.Version), "staged", f.Hash.String())
+		p := filepath.Join(stateDir, fmt.Sprint(f.Version), "staged", f.Hash.String())
 		if _, err := os.Lstat(p); err != nil {
 			fmt.Println(f)
 		}
@@ -176,7 +181,7 @@ func stageFiles(toKeys []string) error {
 		if !f.Present() {
 			continue
 		}
-		src := filepath.Join(fmt.Sprint(f.Version), "staged", f.Hash.String())
+		src := filepath.Join(stateDir, fmt.Sprint(f.Version), "staged", f.Hash.String())
 		var dst string
 		if f.Type != swupd.TypeDirectory {
 			dst = filepath.Join(filepath.Dir(f.Name), ".update."+filepath.Base(f.Name))

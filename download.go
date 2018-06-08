@@ -30,11 +30,11 @@ func downloadRemainingFiles() error {
 	var err error
 	fmt.Printf("%d files were not in a pack\n", len(files))
 	for _, f := range files {
-		err = os.MkdirAll(fmt.Sprintf("%d/staged", f.Version), 0744)
+		err = os.MkdirAll(fmt.Sprintf("%s/%d/staged", stateDir, f.Version), 0744)
 		if err != nil {
 			return err
 		}
-		target := fmt.Sprintf("%d/staged/%s", f.Version, f.Name)
+		target := fmt.Sprintf("%s/%d/staged/%s", stateDir, f.Version, f.Name)
 		if _, err = os.Lstat(target); err == nil {
 			continue
 		}
@@ -82,11 +82,11 @@ func downloadVerifyBundles(bundles []*swupd.File, oldMoM *swupd.Manifest) error 
 func downloadVerifyMoM(serverVersion uint32) (*swupd.Manifest, error) {
 	addVer(serverVersion)
 	sVer := fmt.Sprint(serverVersion)
-	err := os.MkdirAll(sVer, 0744)
+	err := os.MkdirAll(filepath.Join(stateDir, sVer), 0744)
 	if err != nil {
 		return nil, err
 	}
-	outMoM, err := os.Create(filepath.Join(sVer, "Manifest.MoM"))
+	outMoM, err := os.Create(filepath.Join(stateDir, sVer, "Manifest.MoM"))
 	if err != nil {
 		return nil, err
 	}
@@ -101,18 +101,18 @@ func downloadVerifyMoM(serverVersion uint32) (*swupd.Manifest, error) {
 		return nil, err
 	}
 
-	return swupd.ParseManifestFile(filepath.Join(sVer, "Manifest.MoM"))
+	return swupd.ParseManifestFile(filepath.Join(stateDir, sVer, "Manifest.MoM"))
 }
 
 func downloadManifest(bundle *swupd.File) (*swupd.Manifest, error) {
-	outMan := fmt.Sprintf("%d/Manifest.%s", bundle.Version, bundle.Name)
+	outMan := filepath.Join(stateDir, fmt.Sprint(bundle.Version), "Manifest."+bundle.Name)
 	if _, err := os.Lstat(outMan); err == nil {
 		return swupd.ParseManifestFile(outMan)
 	}
 	url := fmt.Sprintf("https://download.clearlinux.org/update/%d/Manifest.%s.tar", bundle.Version, bundle.Name)
 
 	addVer(bundle.Version)
-	err := os.MkdirAll(fmt.Sprint(bundle.Version), 0744)
+	err := os.MkdirAll(filepath.Join(stateDir, fmt.Sprint(bundle.Version)), 0744)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +135,7 @@ func downloadBundlePack(b *swupd.Manifest, oldMoM *swupd.Manifest) error {
 	if recentVersion == 0 {
 		return errors.New("couldn't find recent version")
 	}
-	outPack := fmt.Sprintf("%d/pack-%s-from-%d.tar", b.Header.Version, b.Name, recentVersion)
+	outPack := fmt.Sprintf("%s/%d/pack-%s-from-%d.tar", stateDir, b.Header.Version, b.Name, recentVersion)
 	if _, err := os.Lstat(outPack); err == nil {
 		return nil
 	}

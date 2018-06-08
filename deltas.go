@@ -14,7 +14,7 @@ func applyDelta(from *swupd.File, to *swupd.File, deltaPath string) error {
 		return err
 	}
 
-	outPath := filepath.Join(fmt.Sprint(to.Version), "staged", to.Hash.String())
+	outPath := filepath.Join(stateDir, fmt.Sprint(to.Version), "staged", to.Hash.String())
 	if _, err := os.Lstat(outPath); err == nil {
 		return nil
 	}
@@ -44,7 +44,7 @@ func applyDelta(from *swupd.File, to *swupd.File, deltaPath string) error {
 }
 
 func applyDeltasFromVersion(v uint32) error {
-	deltaDir := filepath.Join(fmt.Sprint(v), "delta")
+	deltaDir := filepath.Join(stateDir, fmt.Sprint(v), "delta")
 	if _, err := os.Lstat(deltaDir); err != nil {
 		return nil
 	}
