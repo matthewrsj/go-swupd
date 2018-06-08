@@ -15,7 +15,6 @@
 package main
 
 import (
-	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -24,8 +23,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"syscall"
-	"unsafe"
 
 	"github.com/clearlinux/mixer-tools/swupd"
 )
@@ -199,109 +196,10 @@ func Download(url, filename string) error {
 	return os.Rename(tmpFile, filename)
 }
 
-// DownloadFile downloads from url and extracts the file if necessary using the
-// compression method indicated by the url file extension. If there is no file
-// extension or the extension does not match a supported compression method the
-// file is downloaded as-is.
-func DownloadFile(url, target string) error {
-	var err error
-	switch filepath.Ext(url) {
-	case ".gz":
-		err = gzExtractURL(url, target)
-	case ".xz":
-		err = xzExtractURL(url, target)
-	default:
-		err = Download(url, target)
-	}
-	return err
-}
-
-// gzExtractURL will download a file at the url and extract it to the target
-// location
-func gzExtractURL(url, target string) error {
-	resp, err := download(url)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	zr, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	out, err := os.Create(target)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = out.Close()
-	}()
-
-	_, ioerr := io.Copy(out, zr)
-	if ioerr != nil {
-		if err := os.RemoveAll(target); err != nil {
-			return errors.New(ioerr.Error() + err.Error())
-		}
-		return ioerr
-	}
-
-	return nil
-}
-
-func xzExtractURL(url, target string) error {
-	// download to file, no native xz compression library in Go
-	if err := Download(url, target+".xz"); err != nil {
-		return err
-	}
-
-	return RunCommandSilent("unxz", "-T", "0", target+".xz")
-}
-
-// tty tracks whether stdout is to a TTY
-// -1 means unset
-// 0 means this is a tty
-// 1 means this is not a tty
-var tty = -1
-
-// StdoutIsTTY returns true if Stdout is to a TTY
-func StdoutIsTTY() bool {
-	// check for cached result
-	if tty != -1 {
-		return tty == 0
-	}
-
-	_, _, err := syscall.Syscall6(
-		syscall.SYS_IOCTL,
-		1, // stdout file descriptor
-		syscall.TCGETS,
-		uintptr(unsafe.Pointer(&syscall.Termios{})),
-		0, 0, 0,
-	)
-
-	// set cache so we don't syscall every time
-	// err (errno) can be -1 so don't set tty directly to err
-	if err == 0 {
-		tty = 0
-	} else {
-		tty = 1
-	}
-
-	return tty == 0
-}
-
 func tarExtractURL(url, target string) error {
 	if err := Download(url, target); err != nil {
 		return err
 	}
 
 	return RunCommandSilent("tar", "-C", filepath.Dir(target), "-xf", target)
-}
-
-// Fail prints the error and exits the program with an error code
-func Fail(err error) {
-	fmt.Fprintf(os.Stderr, "%s: ERROR: %s\n", os.Args[0], err)
-	os.Exit(1)
 }
