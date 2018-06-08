@@ -17,8 +17,10 @@ import (
 )
 
 var fromFiles = make(map[string]*swupd.File)
+var fromHashes = make(map[string]*swupd.File)
 var files = make(map[string]*swupd.File)
 var toFiles = make(map[string]*swupd.File)
+var toHashes = make(map[string]*swupd.File)
 var vers = make(map[uint32]bool)
 
 func addVer(ver interface{}) {
@@ -171,7 +173,7 @@ func downloadBundlePack(b *swupd.Manifest, oldMoM *swupd.Manifest) error {
 	return tarExtractURL(url, outPack)
 }
 
-func consolidateFiles(fs map[string]*swupd.File, bMan *swupd.Manifest, ver uint32) {
+func consolidateFiles(fs map[string]*swupd.File, fhashes map[string]*swupd.File, bMan *swupd.Manifest, ver uint32) {
 	for _, f := range bMan.Files {
 		if ver > 0 && f.Version <= uint32(ver) {
 			continue
@@ -181,24 +183,27 @@ func consolidateFiles(fs map[string]*swupd.File, bMan *swupd.Manifest, ver uint3
 			continue
 		}
 
-		fs[f.Hash.String()] = f
+		fs[f.Name] = f
+		if fhashes != nil {
+			fhashes[f.Hash.String()] = f
+		}
 	}
 }
 
 func downloadRemainingFiles() error {
 	var err error
 	fmt.Printf("%d files were not in a pack\n", len(files))
-	for name, f := range files {
+	for _, f := range files {
 		err = os.MkdirAll(fmt.Sprintf("%d/staged", f.Version), 0744)
 		if err != nil {
 			return err
 		}
-		target := fmt.Sprintf("%d/staged/%s", f.Version, name)
+		target := fmt.Sprintf("%d/staged/%s", f.Version, f.Name)
 		if _, err = os.Lstat(target); err == nil {
 			continue
 		}
 		target += ".tar"
-		url := fmt.Sprintf("https://download.clearlinux.org/update/%d/files/%s.tar", f.Version, name)
+		url := fmt.Sprintf("https://download.clearlinux.org/update/%d/files/%s.tar", f.Version, f.Name)
 		err = tarExtractURL(url, target)
 		if err != nil {
 			return err
@@ -217,7 +222,7 @@ func downloadCurrentBundles(MoM *swupd.Manifest, bundles []string) error {
 		if err != nil {
 			return err
 		}
-		consolidateFiles(fromFiles, bMan, 0)
+		consolidateFiles(fromFiles, fromHashes, bMan, 0)
 	}
 	return nil
 }
@@ -233,10 +238,10 @@ func downloadVerifyBundles(bundles []*swupd.File, serverVersion, currentVersion 
 		if err != nil {
 			return err
 		}
-		consolidateFiles(toFiles, bMan, uint32(ver))
+		consolidateFiles(toFiles, toHashes, bMan, uint32(ver))
 		if err = downloadBundlePack(bMan, oldMoM); err != nil {
 			fmt.Println("fullfile fallback", bMan.Name)
-			consolidateFiles(files, bMan, uint32(ver))
+			consolidateFiles(files, nil, bMan, uint32(ver))
 		}
 	}
 
@@ -254,7 +259,7 @@ func applyDelta(from *swupd.File, to *swupd.File, deltaPath string) error {
 	}
 
 	if err := RunCommandSilent("bspatch", from.Name, outPath+".test", deltaPath); err != nil {
-		files[to.Hash.String()] = to
+		files[to.Name] = to
 		return err
 	}
 	defer func() {
@@ -264,13 +269,13 @@ func applyDelta(from *swupd.File, to *swupd.File, deltaPath string) error {
 	testHash, err := swupd.Hashcalc(outPath + ".test")
 	if err != nil {
 		_ = os.Remove(outPath)
-		files[to.Hash.String()] = to
+		files[to.Name] = to
 		return err
 	}
 
 	if testHash != to.Hash {
 		_ = os.Remove(outPath)
-		files[to.Hash.String()] = to
+		files[to.Name] = to
 		return err
 	}
 
@@ -292,8 +297,15 @@ func applyDeltasFromVersion(v uint32) error {
 		if len(fields) != 4 {
 			return nil
 		}
-		fromFile := fromFiles[fields[2]]
-		toFile := toFiles[fields[3]]
+		fromFile := fromHashes[fields[2]]
+		toFile := toHashes[fields[3]]
+		if fromFile == nil {
+			return fmt.Errorf("%s fromFile is nil", path)
+		}
+
+		if toFile == nil {
+			return fmt.Errorf("%s toFile is nil", path)
+		}
 		err = applyDelta(fromFile, toFile, path)
 		if err != nil {
 			fmt.Println(err)
@@ -335,19 +347,47 @@ func verifyUpdateFiles() error {
 	return nil
 }
 
-func stageFiles() error {
-	for _, f := range toFiles {
-		src := filepath.Join(fmt.Sprint(f.Version), "staged", f.Hash.String())
-		dst := filepath.Join(filepath.Dir(f.Name), ".update."+filepath.Base(f.Name))
-		err := os.Link(src, dst)
-		if err != nil {
+func cpy(src, dst string) error {
+	if err := os.Link(src, dst); err != nil {
+		fmt.Println(err)
+		if err := RunCommandSilent("cp", "-af", src, dst); err != nil {
+			if strings.Contains(err.Error(), "are the same file") {
+				fmt.Println("same file, skipping")
+				return nil
+			}
 			return err
 		}
 	}
 	return nil
 }
 
-func renameToFinal() error {
+func stageFiles(toKeys []string) error {
+	for _, k := range toKeys {
+		f := toFiles[k]
+		src := filepath.Join(fmt.Sprint(f.Version), "staged", f.Hash.String())
+		var dst string
+		if f.Type != swupd.TypeDirectory {
+			dst = filepath.Join(filepath.Dir(f.Name), ".update."+filepath.Base(f.Name))
+		} else {
+			dst = f.Name
+		}
+
+		if err := cpy(src, dst); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renameToFinal(toKeys []string) error {
+	for _, k := range toKeys {
+		f := toFiles[k]
+		src := filepath.Join(filepath.Dir(f.Name), ".update."+filepath.Base(f.Name))
+		dst := f.Name
+		if err := os.Rename(src, dst); err != nil {
+			fmt.Println(err)
+		}
+	}
 	return nil
 }
 
@@ -422,13 +462,21 @@ func Update() error {
 		return err
 	}
 
-	if err = stageFiles(); err != nil {
+	var toKeys []string
+	for k := range toFiles {
+		toKeys = append(toKeys, k)
+	}
+	sort.Strings(toKeys)
+	for _, k := range toKeys {
+		fmt.Println(toFiles[k].Name)
+	}
+	if err = stageFiles(toKeys); err != nil {
 		return err
 	}
 
 	// CRITICAL POINT
 	// NO HARD FAILURES ALLOWED
-	renameToFinal()
+	renameToFinal(toKeys)
 
 	return nil
 }
