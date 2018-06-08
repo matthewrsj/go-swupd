@@ -35,42 +35,55 @@ func addVer(ver interface{}) {
 	}
 }
 
-func getCurrentVersion() (string, error) {
+func getCurrentVersion() (uint32, error) {
 	c, err := ioutil.ReadFile("/usr/lib/os-release")
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 
 	re := regexp.MustCompile(`VERSION_ID=(\d+)\n`)
 	m := re.FindStringSubmatch(string(c))
 	if len(m) == 0 {
-		return "", errors.New("unable to determine OS version")
+		return 0, errors.New("unable to determine OS version")
 	}
 
-	return m[1], nil
+	ver, err := strconv.ParseUint(m[1], 10, 32)
+	if err != nil {
+		return 0, err
+	}
+
+	return uint32(ver), nil
 }
 
-func getCurrentFormat() (string, error) {
+func getCurrentFormat() (uint, error) {
 	c, err := ioutil.ReadFile("/usr/share/defaults/swupd/format")
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 
-	return string(c), nil
+	f, err := strconv.ParseUint(strings.Trim(string(c), "\n"), 10, 32)
+	if err != nil {
+		return 0, err
+	}
+
+	return uint(f), nil
 }
 
-func getServerVersion(format string) (string, error) {
-	resp, err := http.Get("https://download.clearlinux.org/update/version/format" + format + "/latest")
+func getServerVersion(format uint) (uint32, error) {
+	sFmt := fmt.Sprint(format)
+	resp, err := http.Get("https://download.clearlinux.org/update/version/format" + sFmt + "/latest")
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 
-	return strings.Trim(string(body), "\n"), nil
+	verString := strings.Trim(string(body), "\n")
+	v, err := strconv.ParseUint(verString, 10, 32)
+	return uint32(v), err
 }
 
 func getSubbedBundles() ([]string, error) {
@@ -89,15 +102,11 @@ func getSubbedBundles() ([]string, error) {
 	return bundles, nil
 }
 
-func getUpdatedBundles(bundles []string, newMoM *swupd.Manifest, currentVersion string) []*swupd.File {
+func getUpdatedBundles(bundles []string, newMoM *swupd.Manifest, currentVersion uint32) []*swupd.File {
 	var bundlesNeeded []*swupd.File
-	ver, err := strconv.ParseUint(currentVersion, 10, 32)
-	if err != nil {
-		fmt.Println("shoot")
-	}
-	addVer(ver)
+	addVer(currentVersion)
 	for _, man := range newMoM.Files {
-		if man.Version <= uint32(ver) {
+		if man.Version <= currentVersion {
 			continue
 		}
 		i := sort.SearchStrings(bundles, man.Name)
@@ -244,15 +253,11 @@ func Update() error {
 
 	bundlesNeeded := getUpdatedBundles(bundles, newMoM, currentVersion)
 
-	if err = downloadVerifyBundles(bundlesNeeded, serverVersion, currentVersion, oldMoM); err != nil {
+	if err = downloadVerifyBundles(bundlesNeeded, oldMoM); err != nil {
 		return err
 	}
 
-	cv, err := strconv.ParseUint(currentVersion, 10, 32)
-	if err != nil {
-		return err
-	}
-	vers[uint32(cv)] = false
+	vers[currentVersion] = false
 
 	if err = applyDeltas(); err != nil {
 		return err

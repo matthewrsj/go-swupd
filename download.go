@@ -22,7 +22,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 
 	"github.com/clearlinux/mixer-tools/swupd"
 )
@@ -64,37 +63,34 @@ func downloadCurrentBundles(MoM *swupd.Manifest, bundles []string) error {
 	return nil
 }
 
-func downloadVerifyBundles(bundles []*swupd.File, serverVersion, currentVersion string, oldMoM *swupd.Manifest) error {
-	ver, err := strconv.ParseUint(currentVersion, 10, 32)
-	if err != nil {
-		return err
-	}
+func downloadVerifyBundles(bundles []*swupd.File, oldMoM *swupd.Manifest) error {
 	for _, b := range bundles {
 		bMan, err := downloadManifest(b)
 		if err != nil {
 			return err
 		}
-		consolidateAllFiles(toFiles, toHashes, bMan, uint32(ver))
+		consolidateAllFiles(toFiles, toHashes, bMan, oldMoM.Header.Version)
 		if err = downloadBundlePack(bMan, oldMoM); err != nil {
 			fmt.Println("fullfile fallback", bMan.Name)
-			consolidateFiles(files, nil, bMan, uint32(ver))
+			consolidateFiles(files, nil, bMan, oldMoM.Header.Version)
 		}
 	}
 
 	return nil
 }
 
-func downloadVerifyMoM(serverVersion string) (*swupd.Manifest, error) {
+func downloadVerifyMoM(serverVersion uint32) (*swupd.Manifest, error) {
 	addVer(serverVersion)
-	err := os.MkdirAll(serverVersion, 0744)
+	sVer := fmt.Sprint(serverVersion)
+	err := os.MkdirAll(sVer, 0744)
 	if err != nil {
 		return nil, err
 	}
-	outMoM, err := os.Create(filepath.Join(serverVersion, "Manifest.MoM"))
+	outMoM, err := os.Create(filepath.Join(sVer, "Manifest.MoM"))
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.Get("https://download.clearlinux.org/update/" + serverVersion + "/Manifest.MoM")
+	resp, err := http.Get("https://download.clearlinux.org/update/" + sVer + "/Manifest.MoM")
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +101,7 @@ func downloadVerifyMoM(serverVersion string) (*swupd.Manifest, error) {
 		return nil, err
 	}
 
-	return swupd.ParseManifestFile(filepath.Join(serverVersion, "Manifest.MoM"))
+	return swupd.ParseManifestFile(filepath.Join(sVer, "Manifest.MoM"))
 }
 
 func downloadManifest(bundle *swupd.File) (*swupd.Manifest, error) {
